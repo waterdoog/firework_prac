@@ -1,7 +1,8 @@
 import math
 import random
 import time
-from typing import Optional, Tuple
+from collections import defaultdict
+from typing import Tuple
 
 import cv2
 import mediapipe as mp
@@ -134,14 +135,14 @@ def main() -> None:
     if not cap.isOpened():
         raise RuntimeError("Cannot open camera. Make sure a webcam is connected.")
 
-    fireworks = []
-    cooldown = 0.0
+    fireworks: list[Firework] = []
     prev_time = time.perf_counter()
     max_fireworks = 12
+    hand_cooldowns: defaultdict[str, float] = defaultdict(float)
 
     cv2.namedWindow("Gesture Fireworks", cv2.WINDOW_NORMAL)
 
-    with mp_hands.Hands(max_num_hands=1, model_complexity=1, min_detection_confidence=0.6, min_tracking_confidence=0.5) as hands:
+    with mp_hands.Hands(max_num_hands=2, model_complexity=1, min_detection_confidence=0.6, min_tracking_confidence=0.5) as hands:
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -158,25 +159,28 @@ def main() -> None:
             dt = now - prev_time
             prev_time = now
             dt = min(dt, 0.05)
-            cooldown = max(0.0, cooldown - dt)
+            for key in list(hand_cooldowns.keys()):
+                hand_cooldowns[key] = max(0.0, hand_cooldowns[key] - dt)
 
-            open_hand_detected = False
-            hand_position: Optional[Tuple[int, int]] = None
+            triggered_hands: list[Tuple[str, Tuple[int, int]]] = []
 
             frame.flags.writeable = True
             if results.multi_hand_landmarks and results.multi_handedness:
                 for hand_landmarks, hand_info in zip(results.multi_hand_landmarks, results.multi_handedness):
                     DRAWING_UTILS.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
                     label = hand_info.classification[0].label
-                    if not open_hand_detected and is_hand_open(hand_landmarks, label):
-                        open_hand_detected = True
-                        hand_position = get_hand_anchor(hand_landmarks, frame.shape)
+                    index = hand_info.classification[0].index
+                    hand_key = f"{label}_{index}"
+                    if is_hand_open(hand_landmarks, label):
+                        position = get_hand_anchor(hand_landmarks, frame.shape)
+                        triggered_hands.append((hand_key, position))
 
-            if open_hand_detected and hand_position and cooldown == 0.0:
-                fireworks.append(Firework(hand_position))
-                if len(fireworks) > max_fireworks:
-                    fireworks = fireworks[-max_fireworks:]
-                cooldown = 0.6
+            for hand_key, hand_position in triggered_hands:
+                if hand_cooldowns[hand_key] <= 0.0:
+                    fireworks.append(Firework(hand_position))
+                    if len(fireworks) > max_fireworks:
+                        fireworks = fireworks[-max_fireworks:]
+                    hand_cooldowns[hand_key] = 0.6
 
             for firework in fireworks:
                 firework.update(dt)
